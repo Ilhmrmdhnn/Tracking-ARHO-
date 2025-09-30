@@ -3,6 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#667eea">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="GPS Tracker">
+    <link rel="manifest" href="manifest.json">
     <title>GPS Tracker - Tim Lapangan</title>
     
     <style>
@@ -130,6 +135,30 @@
             color: #004085;
         }
         
+        .install-prompt {
+            margin-top: 15px;
+            padding: 12px;
+            background: #d1ecf1;
+            border: 1px solid #bee5eb;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #0c5460;
+            text-align: center;
+            display: none;
+        }
+        
+        .install-prompt button {
+            margin-top: 8px;
+            padding: 8px 20px;
+            background: #17a2b8;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        
         .location-info {
             margin-top: 15px;
             padding: 12px;
@@ -177,7 +206,55 @@
         <div class="info">
             💡 <strong>Tips:</strong> Pastikan GPS dan izin lokasi sudah aktif di HP kamu.
         </div>
+        
+        <div class="install-prompt" id="installPrompt">
+            📱 <strong>Install sebagai App!</strong><br>
+            <small>Untuk pengalaman lebih baik dan stabil</small><br>
+            <button id="installBtn">Install Sekarang</button>
+        </div>
     </div>
+
+    <!-- Register Service Worker -->
+    <script>
+        // Register Service Worker for PWA
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/service-worker.js')
+                    .then((registration) => {
+                        console.log('Service Worker registered:', registration);
+                    })
+                    .catch((error) => {
+                        console.log('Service Worker registration failed:', error);
+                    });
+            });
+        }
+
+        // Install PWA prompt
+        let deferredPrompt;
+        const installPromptEl = document.getElementById('installPrompt');
+        const installBtnEl = document.getElementById('installBtn');
+
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            installPromptEl.style.display = 'block';
+        });
+
+        installBtnEl.addEventListener('click', async () => {
+            if (deferredPrompt) {
+                deferredPrompt.prompt();
+                const { outcome } = await deferredPrompt.userChoice;
+                console.log(`User response: ${outcome}`);
+                deferredPrompt = null;
+                installPromptEl.style.display = 'none';
+            }
+        });
+
+        window.addEventListener('appinstalled', () => {
+            console.log('PWA installed');
+            installPromptEl.style.display = 'none';
+        });
+    </script>
 
     <!-- Firebase -->
     <script type="module">
@@ -204,6 +281,8 @@
         let isTracking = false;
         let watchId = null;
         let memberId = null;
+        let wakeLock = null;
+        let heartbeatInterval = null;
 
         const statusEl = document.getElementById('status');
         const startBtn = document.getElementById('startBtn');
@@ -246,6 +325,9 @@
                 return;
             }
 
+            // Request wake lock untuk keep screen on
+            requestWakeLock();
+
             // Request location permission and start watching
             watchId = navigator.geolocation.watchPosition(
                 (position) => {
@@ -267,6 +349,20 @@
             const locationRef = ref(database, `locations/${memberId}`);
             onDisconnect(locationRef).remove();
 
+            // Heartbeat untuk keep connection alive (kirim data tiap 10 detik)
+            heartbeatInterval = setInterval(() => {
+                if (isTracking) {
+                    navigator.geolocation.getCurrentPosition(
+                        (position) => {
+                            const { latitude, longitude } = position.coords;
+                            sendLocation(latitude, longitude, name);
+                        },
+                        null,
+                        { enableHighAccuracy: false, timeout: 5000 }
+                    );
+                }
+            }, 10000);
+
             isTracking = true;
             startBtn.textContent = 'Stop Tracking';
             startBtn.style.background = 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)';
@@ -280,6 +376,15 @@
                 navigator.geolocation.clearWatch(watchId);
                 watchId = null;
             }
+
+            // Clear heartbeat
+            if (heartbeatInterval) {
+                clearInterval(heartbeatInterval);
+                heartbeatInterval = null;
+            }
+
+            // Release wake lock
+            releaseWakeLock();
 
             // Remove from database
             if (memberId) {
@@ -345,6 +450,36 @@
             statusEl.textContent = message;
             statusEl.className = `status ${type}`;
         }
+
+        // Wake Lock functions
+        async function requestWakeLock() {
+            try {
+                if ('wakeLock' in navigator) {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    console.log('Wake Lock active');
+                    
+                    wakeLock.addEventListener('release', () => {
+                        console.log('Wake Lock released');
+                    });
+                }
+            } catch (err) {
+                console.error('Wake Lock error:', err);
+            }
+        }
+
+        function releaseWakeLock() {
+            if (wakeLock) {
+                wakeLock.release();
+                wakeLock = null;
+            }
+        }
+
+        // Re-acquire wake lock when page becomes visible
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && isTracking && !wakeLock) {
+                requestWakeLock();
+            }
+        });
 
         // Auto-stop tracking when page is closed
         window.addEventListener('beforeunload', () => {

@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GPS Tracker - Tim Lapangan</title>
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 30px;
+            max-width: 400px;
+            width: 100%;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            color: #667eea;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            color: #333;
+            font-weight: 600;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 16px;
+            transition: border 0.3s;
+        }
+        
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .btn {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+        
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+            font-size: 14px;
+        }
+        
+        .status.inactive {
+            background: #f5f5f5;
+            color: #666;
+        }
+        
+        .status.active {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .info {
+            margin-top: 15px;
+            padding: 10px;
+            background: #e7f3ff;
+            border-radius: 8px;
+            font-size: 12px;
+            color: #004085;
+        }
+        
+        .location-info {
+            margin-top: 15px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            font-size: 12px;
+        }
+        
+        .location-info p {
+            margin: 5px 0;
+            color: #555;
+        }
+        
+        .location-info strong {
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📍 GPS Tracker</h1>
+            <p>Tracking Tim Lapangan</p>
+        </div>
+        
+        <div class="form-group">
+            <label for="memberName">Nama Kamu:</label>
+            <input type="text" id="memberName" placeholder="Contoh: Budi" autocomplete="name">
+        </div>
+        
+        <button class="btn" id="startBtn" onclick="toggleTracking()">
+            Mulai Tracking
+        </button>
+        
+        <div class="status inactive" id="status">
+            Belum aktif. Klik tombol untuk mulai tracking.
+        </div>
+        
+        <div class="location-info" id="locationInfo" style="display: none;">
+            <p><strong>Latitude:</strong> <span id="lat">-</span></p>
+            <p><strong>Longitude:</strong> <span id="lng">-</span></p>
+            <p><strong>Update terakhir:</strong> <span id="lastUpdate">-</span></p>
+        </div>
+        
+        <div class="info">
+            💡 <strong>Tips:</strong> Pastikan GPS dan izin lokasi sudah aktif di HP kamu.
+        </div>
+    </div>
+
+    <!-- Firebase -->
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+        import { getDatabase, ref, set, onDisconnect } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
+
+        // ========================================
+        // GANTI INI DENGAN CONFIG FIREBASE KAMU!
+        // ========================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyBSqqF5fUpSbxnx36-dCn9FwfOLq93wtZo",
+            authDomain: "arho-tracking.firebaseapp.com",
+            databaseURL: "https://arho-tracking-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "arho-tracking",
+            storageBucket: "arho-tracking.firebasestorage.app",
+            messagingSenderId: "243178922423",
+            appId: "1:243178922423:web:9d2c42991d3c96722a8832"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const database = getDatabase(app);
+
+        let isTracking = false;
+        let watchId = null;
+        let memberId = null;
+
+        const statusEl = document.getElementById('status');
+        const startBtn = document.getElementById('startBtn');
+        const nameInput = document.getElementById('memberName');
+        const locationInfoEl = document.getElementById('locationInfo');
+        const latEl = document.getElementById('lat');
+        const lngEl = document.getElementById('lng');
+        const lastUpdateEl = document.getElementById('lastUpdate');
+
+        // Load saved name
+        const savedName = localStorage.getItem('memberName');
+        if (savedName) {
+            nameInput.value = savedName;
+        }
+
+        window.toggleTracking = function() {
+            if (!isTracking) {
+                startTracking();
+            } else {
+                stopTracking();
+            }
+        }
+
+        function startTracking() {
+            const name = nameInput.value.trim();
+            
+            if (!name) {
+                alert('Silakan isi nama kamu dulu!');
+                return;
+            }
+
+            // Save name
+            localStorage.setItem('memberName', name);
+            
+            // Generate member ID (atau pakai name sebagai ID)
+            memberId = name.toLowerCase().replace(/\s+/g, '-');
+
+            if (!navigator.geolocation) {
+                showStatus('Browser kamu tidak support GPS!', 'error');
+                return;
+            }
+
+            // Request location permission and start watching
+            watchId = navigator.geolocation.watchPosition(
+                (position) => {
+                    const { latitude, longitude } = position.coords;
+                    sendLocation(latitude, longitude, name);
+                    updateLocationDisplay(latitude, longitude);
+                },
+                (error) => {
+                    handleLocationError(error);
+                },
+                {
+                    enableHighAccuracy: true,
+                    timeout: 10000,
+                    maximumAge: 0
+                }
+            );
+
+            // Setup auto-remove on disconnect
+            const locationRef = ref(database, `locations/${memberId}`);
+            onDisconnect(locationRef).remove();
+
+            isTracking = true;
+            startBtn.textContent = 'Stop Tracking';
+            startBtn.style.background = 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)';
+            nameInput.disabled = true;
+            locationInfoEl.style.display = 'block';
+            showStatus('✅ Tracking aktif! Lokasi kamu sedang dikirim...', 'active');
+        }
+
+        function stopTracking() {
+            if (watchId) {
+                navigator.geolocation.clearWatch(watchId);
+                watchId = null;
+            }
+
+            // Remove from database
+            if (memberId) {
+                const locationRef = ref(database, `locations/${memberId}`);
+                set(locationRef, null);
+            }
+
+            isTracking = false;
+            startBtn.textContent = 'Mulai Tracking';
+            startBtn.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+            nameInput.disabled = false;
+            locationInfoEl.style.display = 'none';
+            showStatus('Tracking dihentikan.', 'inactive');
+        }
+
+        function sendLocation(lat, lng, name) {
+            if (!memberId) return;
+
+            const locationRef = ref(database, `locations/${memberId}`);
+            const locationData = {
+                lat: lat,
+                lng: lng,
+                name: name,
+                timestamp: Date.now()
+            };
+
+            set(locationRef, locationData)
+                .then(() => {
+                    console.log('Location sent successfully');
+                })
+                .catch((error) => {
+                    console.error('Error sending location:', error);
+                    showStatus('❌ Gagal mengirim lokasi. Cek koneksi internet!', 'error');
+                });
+        }
+
+        function updateLocationDisplay(lat, lng) {
+            latEl.textContent = lat.toFixed(6);
+            lngEl.textContent = lng.toFixed(6);
+            lastUpdateEl.textContent = new Date().toLocaleTimeString('id-ID');
+        }
+
+        function handleLocationError(error) {
+            let message = '';
+            switch(error.code) {
+                case error.PERMISSION_DENIED:
+                    message = '❌ Izin lokasi ditolak! Aktifkan izin lokasi di browser.';
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    message = '❌ Lokasi tidak tersedia. Coba lagi.';
+                    break;
+                case error.TIMEOUT:
+                    message = '⚠️ Timeout. Mencoba lagi...';
+                    return; // Don't stop tracking on timeout
+                default:
+                    message = '❌ Error tidak diketahui.';
+            }
+            showStatus(message, 'error');
+            stopTracking();
+        }
+
+        function showStatus(message, type) {
+            statusEl.textContent = message;
+            statusEl.className = `status ${type}`;
+        }
+
+        // Auto-stop tracking when page is closed
+        window.addEventListener('beforeunload', () => {
+            if (isTracking) {
+                stopTracking();
+            }
+        });
+    </script>
+</body>
+</html>

@@ -66,6 +66,12 @@
             background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
         }
         
+        .team-member:hover {
+            transform: scale(1.05);
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        
         .popup-content {
             text-align: center;
         }
@@ -131,6 +137,35 @@
         // Object untuk menyimpan marker setiap anggota tim
         const markers = {};
         const teamListEl = document.getElementById('teamList');
+
+        // Fungsi untuk zoom ke anggota tim tertentu
+        function flyToMember(memberId) {
+            console.log('Flying to:', memberId);
+            console.log('Available markers:', Object.keys(markers));
+            
+            if (markers[memberId]) {
+                const marker = markers[memberId];
+                const position = marker.getLatLng();
+                
+                console.log('Position:', position);
+                
+                // Zoom dan pan ke lokasi anggota tim
+                map.flyTo(position, 17, {
+                    duration: 1.5,
+                    easeLinearity: 0.5
+                });
+                
+                // Buka popup marker
+                setTimeout(() => {
+                    marker.openPopup();
+                }, 1500);
+            } else {
+                console.error('Marker not found for:', memberId);
+            }
+        }
+
+        // Make function globally accessible
+        window.flyToMember = flyToMember;
 
         // Listen untuk perubahan data real-time
         const locationsRef = ref(database, 'locations');
@@ -216,8 +251,27 @@
             
             teamListEl.innerHTML = members.map(member => {
                 const isRecent = member.timestamp && (Date.now() - member.timestamp < 60000); // 1 menit
-                return `<div class="team-member ${isRecent ? 'active' : ''}">${member.name || member.id}</div>`;
+                return `<div class="team-member ${isRecent ? 'active' : ''}" onclick="flyToMember('${member.id}')">${member.name || member.id}</div>`;
             }).join('');
+        }
+
+        // Fungsi untuk zoom ke anggota tim tertentu
+        window.flyToMember = function(memberId) {
+            if (markers[memberId]) {
+                const marker = markers[memberId];
+                const position = marker.getLatLng();
+                
+                // Zoom dan pan ke lokasi anggota tim
+                map.flyTo(position, 16, {
+                    duration: 1.5,
+                    easeLinearity: 0.5
+                });
+                
+                // Buka popup marker
+                setTimeout(() => {
+                    marker.openPopup();
+                }, 1000);
+            }
         }
     </script>
 </body>

@@ -126,6 +126,12 @@
             border: 1px solid #f5c6cb;
         }
         
+        .status.warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        
         .info {
             margin-top: 15px;
             padding: 10px;
@@ -175,6 +181,22 @@
         .location-info strong {
             color: #333;
         }
+
+        .persistent-mode {
+            margin-top: 15px;
+            padding: 12px;
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            border-radius: 8px;
+            font-size: 12px;
+            color: #155724;
+        }
+
+        .persistent-mode.disabled {
+            background: #f8f9fa;
+            color: #666;
+            border-color: #ddd;
+        }
     </style>
 </head>
 <body>
@@ -201,20 +223,24 @@
             <p><strong>Latitude:</strong> <span id="lat">-</span></p>
             <p><strong>Longitude:</strong> <span id="lng">-</span></p>
             <p><strong>Update terakhir:</strong> <span id="lastUpdate">-</span></p>
+            <p><strong>Status koneksi:</strong> <span id="connectionStatus">Online ✅</span></p>
+        </div>
+
+        <div class="persistent-mode disabled" id="persistentMode">
+            🔄 <strong>Auto-Resume:</strong> Tracking akan otomatis dilanjutkan saat app dibuka kembali
         </div>
         
         <div class="info">
-            💡 <strong>Tips:</strong> Pastikan GPS dan izin lokasi sudah aktif di HP kamu.
+            💡 <strong>Tips:</strong> Pastikan GPS dan izin lokasi sudah aktif. Install sebagai app untuk hasil terbaik!
         </div>
         
         <div class="install-prompt" id="installPrompt">
             📱 <strong>Install sebagai App!</strong><br>
-            <small>Untuk pengalaman lebih baik dan stabil</small><br>
+            <small>Diperlukan untuk tracking yang lebih stabil</small><br>
             <button id="installBtn">Install Sekarang</button>
         </div>
     </div>
 
-    <!-- Register Service Worker -->
     <script>
         // Register Service Worker for PWA
         if ('serviceWorker' in navigator) {
@@ -222,6 +248,17 @@
                 navigator.serviceWorker.register('./service-worker.js')
                     .then((registration) => {
                         console.log('Service Worker registered:', registration);
+                        
+                        // Register periodic background sync (if supported)
+                        if ('periodicSync' in registration) {
+                            registration.periodicSync.register('location-sync', {
+                                minInterval: 5 * 60 * 1000 // 5 minutes
+                            }).then(() => {
+                                console.log('Periodic sync registered');
+                            }).catch(err => {
+                                console.log('Periodic sync not available:', err);
+                            });
+                        }
                     })
                     .catch((error) => {
                         console.log('Service Worker registration failed:', error);
@@ -259,11 +296,8 @@
     <!-- Firebase -->
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
-        import { getDatabase, ref, set, onDisconnect } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
+        import { getDatabase, ref, set, onDisconnect, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
 
-        // ========================================
-        // GANTI INI DENGAN CONFIG FIREBASE KAMU!
-        // ========================================
         const firebaseConfig = {
             apiKey: "AIzaSyBSqqF5fUpSbxnx36-dCn9FwfOLq93wtZo",
             authDomain: "arho-tracking.firebaseapp.com",
@@ -274,7 +308,6 @@
             appId: "1:243178922423:web:9d2c42991d3c96722a8832"
         };
 
-        // Initialize Firebase
         const app = initializeApp(firebaseConfig);
         const database = getDatabase(app);
 
@@ -283,6 +316,7 @@
         let memberId = null;
         let wakeLock = null;
         let heartbeatInterval = null;
+        let reconnectInterval = null;
 
         const statusEl = document.getElementById('status');
         const startBtn = document.getElementById('startBtn');
@@ -291,11 +325,25 @@
         const latEl = document.getElementById('lat');
         const lngEl = document.getElementById('lng');
         const lastUpdateEl = document.getElementById('lastUpdate');
+        const connectionStatusEl = document.getElementById('connectionStatus');
+        const persistentModeEl = document.getElementById('persistentMode');
 
-        // Load saved name
+        // Load saved name and tracking state
         const savedName = localStorage.getItem('memberName');
+        const savedTrackingState = localStorage.getItem('trackingState');
+        const savedMemberId = localStorage.getItem('memberId');
+        
         if (savedName) {
             nameInput.value = savedName;
+        }
+
+        // Auto-resume tracking if it was active
+        if (savedTrackingState === 'active' && savedName) {
+            console.log('Auto-resuming tracking...');
+            setTimeout(() => {
+                startTracking();
+                showStatus('🔄 Tracking dilanjutkan otomatis!', 'active');
+            }, 1000);
         }
 
         window.toggleTracking = function() {
@@ -314,53 +362,62 @@
                 return;
             }
 
-            // Save name
             localStorage.setItem('memberName', name);
+            localStorage.setItem('trackingState', 'active');
             
-            // Generate member ID (atau pakai name sebagai ID)
             memberId = name.toLowerCase().replace(/\s+/g, '-');
+            localStorage.setItem('memberId', memberId);
 
             if (!navigator.geolocation) {
                 showStatus('Browser kamu tidak support GPS!', 'error');
                 return;
             }
 
-            // Request wake lock untuk keep screen on
             requestWakeLock();
 
-            // Request location permission and start watching
             watchId = navigator.geolocation.watchPosition(
                 (position) => {
-                    const { latitude, longitude } = position.coords;
-                    sendLocation(latitude, longitude, name);
+                    const { latitude, longitude, accuracy } = position.coords;
+                    sendLocation(latitude, longitude, name, accuracy);
                     updateLocationDisplay(latitude, longitude);
+                    updateConnectionStatus(true);
                 },
                 (error) => {
                     handleLocationError(error);
                 },
                 {
                     enableHighAccuracy: true,
-                    timeout: 10000,
+                    timeout: 15000,
                     maximumAge: 0
                 }
             );
 
-            // Setup auto-remove on disconnect
+            // Setup auto-remove on disconnect with last known location
             const locationRef = ref(database, `locations/${memberId}`);
-            onDisconnect(locationRef).remove();
+            const statusRef = ref(database, `locations/${memberId}/status`);
+            onDisconnect(statusRef).set('offline');
 
-            // Heartbeat untuk keep connection alive (kirim data tiap 10 detik)
+            // More frequent heartbeat (every 5 seconds)
             heartbeatInterval = setInterval(() => {
                 if (isTracking) {
                     navigator.geolocation.getCurrentPosition(
                         (position) => {
-                            const { latitude, longitude } = position.coords;
-                            sendLocation(latitude, longitude, name);
+                            const { latitude, longitude, accuracy } = position.coords;
+                            sendLocation(latitude, longitude, name, accuracy);
+                            updateConnectionStatus(true);
                         },
-                        null,
-                        { enableHighAccuracy: false, timeout: 5000 }
+                        (error) => {
+                            console.log('Heartbeat location error:', error);
+                            updateConnectionStatus(false);
+                        },
+                        { enableHighAccuracy: false, timeout: 5000, maximumAge: 10000 }
                     );
                 }
+            }, 5000);
+
+            // Reconnection check (every 10 seconds)
+            reconnectInterval = setInterval(() => {
+                checkConnection();
             }, 10000);
 
             isTracking = true;
@@ -368,7 +425,8 @@
             startBtn.style.background = 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)';
             nameInput.disabled = true;
             locationInfoEl.style.display = 'block';
-            showStatus('✅ Tracking aktif! Lokasi kamu sedang dikirim...', 'active');
+            persistentModeEl.classList.remove('disabled');
+            showStatus('✅ Tracking aktif! Lokasi dikirim setiap 5 detik...', 'active');
         }
 
         function stopTracking() {
@@ -377,30 +435,35 @@
                 watchId = null;
             }
 
-            // Clear heartbeat
             if (heartbeatInterval) {
                 clearInterval(heartbeatInterval);
                 heartbeatInterval = null;
             }
 
-            // Release wake lock
-            releaseWakeLock();
-
-            // Remove from database
-            if (memberId) {
-                const locationRef = ref(database, `locations/${memberId}`);
-                set(locationRef, null);
+            if (reconnectInterval) {
+                clearInterval(reconnectInterval);
+                reconnectInterval = null;
             }
 
+            releaseWakeLock();
+
+            // Set status to offline instead of removing
+            if (memberId) {
+                const statusRef = ref(database, `locations/${memberId}/status`);
+                set(statusRef, 'offline');
+            }
+
+            localStorage.setItem('trackingState', 'inactive');
             isTracking = false;
             startBtn.textContent = 'Mulai Tracking';
             startBtn.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
             nameInput.disabled = false;
             locationInfoEl.style.display = 'none';
+            persistentModeEl.classList.add('disabled');
             showStatus('Tracking dihentikan.', 'inactive');
         }
 
-        function sendLocation(lat, lng, name) {
+        function sendLocation(lat, lng, name, accuracy) {
             if (!memberId) return;
 
             const locationRef = ref(database, `locations/${memberId}`);
@@ -408,8 +471,14 @@
                 lat: lat,
                 lng: lng,
                 name: name,
-                timestamp: Date.now()
+                accuracy: Math.round(accuracy) || 0,
+                timestamp: Date.now(),
+                status: 'online',
+                lastSeen: Date.now()
             };
+
+            // Save to localStorage as backup
+            localStorage.setItem('lastLocation', JSON.stringify(locationData));
 
             set(locationRef, locationData)
                 .then(() => {
@@ -417,8 +486,33 @@
                 })
                 .catch((error) => {
                     console.error('Error sending location:', error);
-                    showStatus('❌ Gagal mengirim lokasi. Cek koneksi internet!', 'error');
+                    showStatus('⚠️ Koneksi terputus, mencoba kirim ulang...', 'warning');
+                    updateConnectionStatus(false);
+                    
+                    // Queue for retry
+                    queueLocationUpdate(locationData);
                 });
+        }
+
+        function queueLocationUpdate(locationData) {
+            // Save to localStorage for retry
+            const queue = JSON.parse(localStorage.getItem('locationQueue') || '[]');
+            queue.push(locationData);
+            localStorage.setItem('locationQueue', JSON.stringify(queue));
+        }
+
+        function processLocationQueue() {
+            const queue = JSON.parse(localStorage.getItem('locationQueue') || '[]');
+            if (queue.length === 0) return;
+
+            console.log('Processing queued locations:', queue.length);
+            
+            queue.forEach(locationData => {
+                const locationRef = ref(database, `locations/${memberId}`);
+                set(locationRef, locationData).catch(console.error);
+            });
+
+            localStorage.setItem('locationQueue', '[]');
         }
 
         function updateLocationDisplay(lat, lng) {
@@ -427,23 +521,41 @@
             lastUpdateEl.textContent = new Date().toLocaleTimeString('id-ID');
         }
 
+        function updateConnectionStatus(isOnline) {
+            if (isOnline) {
+                connectionStatusEl.textContent = 'Online ✅';
+                connectionStatusEl.style.color = '#155724';
+            } else {
+                connectionStatusEl.textContent = 'Offline ⚠️';
+                connectionStatusEl.style.color = '#856404';
+            }
+        }
+
+        function checkConnection() {
+            if (navigator.onLine && isTracking) {
+                processLocationQueue();
+            }
+        }
+
         function handleLocationError(error) {
             let message = '';
             switch(error.code) {
                 case error.PERMISSION_DENIED:
                     message = '❌ Izin lokasi ditolak! Aktifkan izin lokasi di browser.';
+                    stopTracking();
                     break;
                 case error.POSITION_UNAVAILABLE:
-                    message = '❌ Lokasi tidak tersedia. Coba lagi.';
+                    message = '⚠️ Lokasi tidak tersedia. Mencoba lagi...';
+                    updateConnectionStatus(false);
                     break;
                 case error.TIMEOUT:
                     message = '⚠️ Timeout. Mencoba lagi...';
-                    return; // Don't stop tracking on timeout
+                    updateConnectionStatus(false);
+                    return;
                 default:
                     message = '❌ Error tidak diketahui.';
             }
-            showStatus(message, 'error');
-            stopTracking();
+            showStatus(message, 'warning');
         }
 
         function showStatus(message, type) {
@@ -451,16 +563,11 @@
             statusEl.className = `status ${type}`;
         }
 
-        // Wake Lock functions
         async function requestWakeLock() {
             try {
                 if ('wakeLock' in navigator) {
                     wakeLock = await navigator.wakeLock.request('screen');
                     console.log('Wake Lock active');
-                    
-                    wakeLock.addEventListener('release', () => {
-                        console.log('Wake Lock released');
-                    });
                 }
             } catch (err) {
                 console.error('Wake Lock error:', err);
@@ -474,17 +581,46 @@
             }
         }
 
-        // Re-acquire wake lock when page becomes visible
         document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'visible' && isTracking && !wakeLock) {
-                requestWakeLock();
+            if (document.visibilityState === 'visible') {
+                if (isTracking && !wakeLock) {
+                    requestWakeLock();
+                }
+                // Process any queued locations
+                processLocationQueue();
             }
         });
 
-        // Auto-stop tracking when page is closed
-        window.addEventListener('beforeunload', () => {
+        // Online/offline detection
+        window.addEventListener('online', () => {
+            console.log('Connection restored');
+            updateConnectionStatus(true);
+            processLocationQueue();
             if (isTracking) {
-                stopTracking();
+                showStatus('✅ Koneksi kembali! Tracking dilanjutkan...', 'active');
+            }
+        });
+
+        window.addEventListener('offline', () => {
+            console.log('Connection lost');
+            updateConnectionStatus(false);
+            if (isTracking) {
+                showStatus('⚠️ Koneksi terputus. Data akan dikirim saat online...', 'warning');
+            }
+        });
+
+        // Save state before unload
+        window.addEventListener('beforeunload', () => {
+            if (isTracking && memberId) {
+                // Send last known location
+                const lastLocation = localStorage.getItem('lastLocation');
+                if (lastLocation) {
+                    const locationRef = ref(database, `locations/${memberId}`);
+                    const data = JSON.parse(lastLocation);
+                    data.status = 'background';
+                    navigator.sendBeacon(`https://arho-tracking-default-rtdb.asia-southeast1.firebasedatabase.app/locations/${memberId}.json`, 
+                        JSON.stringify(data));
+                }
             }
         });
     </script>
